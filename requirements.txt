@@ -1,0 +1,12 @@
+# -------------------------------------------------------
+# requirements.txt
+# -------------------------------------------------------
+# These are the Python packages needed to run the
+# Auto-Auditor Validator Agent backend.
+#
+# Install them with:
+#   pip install -r requirements.txt
+# -------------------------------------------------------
+
+fastapi           # Web framework for building APIs
+uvicorn[standard] # ASGI server to run the FastAPI app

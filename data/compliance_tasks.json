@@ -1,0 +1,74 @@
+[
+  {
+    "task_id": "TASK-001",
+    "title": "KYC Document Verification for Q1 Accounts",
+    "department": "Retail Banking",
+    "assigned_to": "Priya Sharma",
+    "status": "completed",
+    "evidence": {
+      "document_id": "DOC-8831",
+      "submitted_at": "2026-03-15T10:30:00",
+      "reviewer": "Amit Verma"
+    }
+  },
+  {
+    "task_id": "TASK-002",
+    "title": "Anti-Money Laundering (AML) Transaction Review",
+    "department": "Compliance",
+    "assigned_to": "Rahul Mehta",
+    "status": "completed",
+    "evidence": {
+      "document_id": null,
+      "submitted_at": null,
+      "reviewer": null
+    }
+  },
+  {
+    "task_id": "TASK-003",
+    "title": "Internal Audit of Loan Disbursement Process",
+    "department": "Credit Risk",
+    "assigned_to": "Sneha Iyer",
+    "status": "in_progress",
+    "evidence": {
+      "document_id": null,
+      "submitted_at": null,
+      "reviewer": null
+    }
+  },
+  {
+    "task_id": "TASK-004",
+    "title": "Data Privacy Impact Assessment (DPIA)",
+    "department": "IT Security",
+    "assigned_to": "Vikram Joshi",
+    "status": "completed",
+    "evidence": {
+      "document_id": "DOC-4520",
+      "submitted_at": "2026-04-01T14:00:00",
+      "reviewer": null
+    }
+  },
+  {
+    "task_id": "TASK-005",
+    "title": "Regulatory Capital Adequacy Reporting",
+    "department": "Treasury",
+    "assigned_to": "Ananya Gupta",
+    "status": "pending",
+    "evidence": {
+      "document_id": null,
+      "submitted_at": null,
+      "reviewer": null
+    }
+  },
+  {
+    "task_id": "TASK-006",
+    "title": "Customer Complaint Resolution Audit",
+    "department": "Operations",
+    "assigned_to": "Karan Singh",
+    "status": "completed",
+    "evidence": {
+      "document_id": "DOC-7712",
+      "submitted_at": "2026-04-10T09:15:00",
+      "reviewer": "Neha Kulkarni"
+    }
+  }
+]
