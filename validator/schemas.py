@@ -58,3 +58,50 @@ class ValidationResult(BaseModel):
     verdict: str                        # "PASS" | "FAIL" | "NEEDS_REVIEW"
     reasons: List[str]                  # Human-readable explanation(s)
     validated_at: str                   # When the check was performed
+
+
+# ---------- Reasoning Validator models ----------
+
+class ReasoningRequest(BaseModel):
+    """
+    Input for the POST /reasoning-validate endpoint.
+
+    The Dispatcher Agent (or a human) sends a task
+    description + evidence, and the Reasoning Engine
+    returns an intelligent verdict.
+
+    Example:
+    {
+        "task_id": 1,
+        "task": "Enable MFA for admin accounts",
+        "evidence": {
+            "api_response": true,
+            "manual_status": "Done",
+            "screenshot_uploaded": true
+        }
+    }
+    """
+    task_id: int = 1                    # Unique task identifier
+    task: str                           # Description of the compliance task
+    evidence: dict                      # Key-value pairs of evidence fields
+
+
+class ReasoningResponse(BaseModel):
+    """
+    Standardised output from the Reasoning Validator Engine.
+
+    Contains the verdict plus confidence/risk metrics
+    and the LLM's reasoning explanation.
+    """
+    task_id: int
+    status: str                         # "VERIFIED" | "NON_COMPLIANT" | "NEEDS_REVIEW"
+    confidence_score: int               # 0-100 (how sure are we?)
+    risk_score: int                     # 0-100 (how risky is this?)
+    reason: str                         # Human-readable explanation
+    concerns: List[str] = []            # Specific concerns found
+    recommendation: str = ""            # Action item for the audit team
+    suspicion_flags: List[str] = []     # Deterministic flags triggered
+    llm_used: bool = False              # Was the LLM used for reasoning?
+    llm_model: Optional[str] = None     # Which model (e.g., "phi3")
+    timestamp: str = ""                 # When the validation was performed
+

@@ -10,3 +10,7 @@
 
 fastapi           # Web framework for building APIs
 uvicorn[standard] # ASGI server to run the FastAPI app
+requests          # HTTP client for the validator agent to call compliance APIs
+scikit-learn      # ML framework for training the compliance model
+pandas            # Data manipulation for the training pipeline
+joblib            # Model serialisation (save/load .pkl files)

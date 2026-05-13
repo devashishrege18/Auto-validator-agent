@@ -125,3 +125,288 @@ def validate_single(task_id: str):
 
     # Run the validator
     return validate_task(task)
+
+
+# -------------------------------------------------------
+# 4.  Mock Banking Compliance APIs
+# -------------------------------------------------------
+# WHY MOCK APIs?
+# ──────────────
+# In a real bank, the Auto-Auditor agent would call
+# internal services to *independently* verify whether a
+# compliance control is actually in place — rather than
+# trusting a human's self-reported status.
+#
+# These lightweight mock endpoints simulate those internal
+# services so we can develop and test the agent locally
+# without needing access to production infrastructure.
+#
+# In production you would swap each mock with a real
+# integration:
+#   • /mfa-status       → bank's Identity Provider API
+#                         (e.g., Okta, Azure AD, Ping)
+#   • /firewall-status  → network security appliance API
+#                         (e.g., Palo Alto, Fortinet)
+#   • /password-policy  → Active Directory / IAM policy
+#                         service (e.g., LDAP query, AWS IAM)
+# -------------------------------------------------------
+
+
+@app.get("/mfa-status", tags=["Mock Compliance APIs"])
+def get_mfa_status():
+    """
+    Simulate querying the bank's Identity Provider to check
+    whether Multi-Factor Authentication (MFA) is enabled
+    organisation-wide.
+
+    In production this would call an API like:
+        GET https://idp.internal.bank/api/v1/mfa/status
+
+    The mock returns MFA as *enabled* (True) — meaning this
+    compliance control is currently satisfied.
+    """
+    return {
+        "mfa_enabled": True,
+    }
+
+
+@app.get("/firewall-status", tags=["Mock Compliance APIs"])
+def get_firewall_status():
+    """
+    Simulate querying the bank's network-security appliance
+    to verify whether the perimeter firewall is active.
+
+    In production this would call an API like:
+        GET https://firewall.internal.bank/api/v1/status
+
+    The mock deliberately returns *inactive* (False) so that
+    the Auto-Auditor can detect and flag the non-compliance.
+    This lets us test the FAIL / NEEDS_REVIEW logic paths.
+    """
+    return {
+        "firewall_active": False,
+    }
+
+
+@app.get("/password-policy", tags=["Mock Compliance APIs"])
+def get_password_policy():
+    """
+    Simulate querying the bank's IAM / Active Directory
+    service to retrieve the current password-policy settings.
+
+    In production this would call an API like:
+        GET https://iam.internal.bank/api/v1/password-policy
+
+    The mock returns a policy that requires:
+      • A minimum password length of 12 characters
+      • At least one special character
+    These values mirror typical banking-industry standards
+    (e.g., NIST SP 800-63B recommendations).
+    """
+    return {
+        "minimum_length": 12,
+        "special_characters_required": True,
+    }
+
+
+# -------------------------------------------------------
+# 5.  Validator Agent — Full Audit Endpoint
+# -------------------------------------------------------
+# This endpoint triggers the Validator Agent to call all
+# mock compliance APIs over HTTP, evaluate each control,
+# and return a consolidated audit report.
+#
+# The agent lives in `validator/agent.py` and uses the
+# `requests` library to call the /mfa-status,
+# /firewall-status, and /password-policy endpoints above.
+#
+# Usage:
+#   GET /audit   →  returns the full compliance report
+# -------------------------------------------------------
+
+from validator.agent import run_all_checks
+
+
+@app.get("/audit", tags=["Validator Agent"])
+def run_audit():
+    """
+    Trigger the Auto-Auditor Validator Agent to perform a
+    full compliance audit.
+
+    The agent independently calls each mock compliance API,
+    evaluates the response against banking regulations, and
+    returns a consolidated report with verdicts:
+
+    - **VERIFIED** — the control meets compliance rules
+    - **NON-COMPLIANT** — the control fails compliance rules
+    - **NEEDS MANUAL REVIEW** — API unreachable or data ambiguous
+    """
+    return run_all_checks()
+
+
+# -------------------------------------------------------
+# 6.  Smart Audit — AI-Powered (ML + LLM)
+# -------------------------------------------------------
+# This endpoint combines three layers of intelligence:
+#   1. Rule-based compliance checks (deterministic)
+#   2. Custom-trained ML model (risk classification)
+#   3. Local LLM via Ollama (natural language reasoning)
+#
+# The system degrades gracefully:
+#   - Full mode:  ML + Ollama both available
+#   - ML-only:    Ollama not running, template reasoning
+#   - LLM-only:   Model not trained, LLM reasons directly
+#   - Basic:      Neither available, rule-based only
+#
+# Usage:
+#   GET /audit/smart   →  returns the comprehensive report
+# -------------------------------------------------------
+
+from validator.agent import run_smart_audit
+
+
+@app.get("/audit/smart", tags=["Smart Audit (AI-Powered)"])
+def run_smart_audit_endpoint():
+    """
+    Trigger a comprehensive AI-powered compliance audit.
+
+    This is the **flagship endpoint** — it combines:
+
+    - **Rule-based checks** for deterministic compliance verdicts
+    - **Custom ML model** (Random Forest) for risk level and score
+    - **Local LLM** (Ollama) for natural-language audit reasoning
+
+    The response includes:
+    - Infrastructure check results
+    - Task validation results
+    - ML risk prediction (risk level, compliance score, feature importances)
+    - AI-generated audit report (executive summary, findings, remediation plan)
+
+    **Note:** The response will indicate which AI mode is active
+    (full/ml-only/llm-only/basic) depending on what's available.
+    """
+    return run_smart_audit()
+
+
+# -------------------------------------------------------
+# 7.  Reasoning Validator — Intelligent LLM-Powered
+# -------------------------------------------------------
+# This is the FLAGSHIP endpoint of the Auto-Auditor.
+#
+# It accepts any compliance task + evidence via POST,
+# runs hybrid deterministic + LLM reasoning, and returns
+# a standardised verdict with confidence and risk scores.
+#
+# Integration-ready for:
+#   • Dispatcher Agent  → sends tasks here for validation
+#   • Spectre-Sentinel  → consumes risk scores for alerting
+#   • Frontend Dashboard → displays verdicts in real-time
+#
+# Usage:
+#   POST /reasoning-validate
+#   Body: {"task_id": 1, "task": "...", "evidence": {...}}
+# -------------------------------------------------------
+
+from validator.reasoning_engine import reason_and_validate
+from validator.audit_logger import log_validation, get_audit_trail, get_audit_stats
+from validator.schemas import ReasoningRequest, ReasoningResponse
+
+
+@app.post(
+    "/reasoning-validate",
+    response_model=ReasoningResponse,
+    tags=["Reasoning Validator (AI-Powered)"],
+)
+def reasoning_validate(request: ReasoningRequest):
+    """
+    **Intelligent Compliance Validation** — the core agentic endpoint.
+
+    Accepts a compliance task and its evidence, then runs a
+    **hybrid reasoning pipeline**:
+
+    1. **Deterministic suspicion detection** — catches contradictions,
+       missing data, and fabrication patterns instantly
+    2. **LLM reasoning** (Ollama/phi3) — analyses the evidence like
+       a human auditor and provides nuanced judgment
+    3. **Risk & confidence scoring** — quantifies how suspicious
+       the evidence is and how confident the verdict is
+
+    **Input example:**
+    ```json
+    {
+        "task_id": 1,
+        "task": "Enable MFA for admin accounts",
+        "evidence": {
+            "api_response": true,
+            "manual_status": "Done",
+            "screenshot_uploaded": true
+        }
+    }
+    ```
+
+    **Output:**
+    - `status`: VERIFIED / NON_COMPLIANT / NEEDS_REVIEW
+    - `confidence_score`: 0-100
+    - `risk_score`: 0-100
+    - `reason`: human-readable explanation
+    - `suspicion_flags`: what the rules caught
+    - `llm_used`: whether the LLM was involved
+
+    **Falls back gracefully** to deterministic-only reasoning
+    if Ollama is not running.
+    """
+
+    # Run the reasoning engine
+    result = reason_and_validate(
+        task_id=request.task_id,
+        task=request.task,
+        evidence=request.evidence,
+    )
+
+    # Add the task description to the result for audit logging
+    result["task"] = request.task
+
+    # Log to the audit trail
+    log_validation(result)
+
+    return result
+
+
+# -------------------------------------------------------
+# 8.  Audit Trail Endpoints
+# -------------------------------------------------------
+# These endpoints expose the audit log for monitoring
+# and compliance reporting purposes.
+# -------------------------------------------------------
+
+@app.get("/audit-trail", tags=["Audit Trail"])
+def view_audit_trail(limit: int = 50):
+    """
+    View the most recent validation audit log entries.
+
+    Returns entries newest-first, with a configurable limit.
+    Each entry records: task, timestamp, verdict, risk score,
+    and which reasoning method was used.
+
+    Use this for compliance reporting and pattern analysis.
+    """
+    return {
+        "entries": get_audit_trail(limit=limit),
+        "total_returned": min(limit, len(get_audit_trail(limit=limit))),
+    }
+
+
+@app.get("/audit-stats", tags=["Audit Trail"])
+def view_audit_stats():
+    """
+    Get summary statistics from the audit trail.
+
+    Returns:
+    - Total validations performed
+    - Breakdown by verdict (VERIFIED / NON_COMPLIANT / NEEDS_REVIEW)
+    - Average risk score
+    - Number of high-risk validations
+
+    Useful for the Spectre-Sentinel Watchdog and dashboards.
+    """
+    return get_audit_stats()
