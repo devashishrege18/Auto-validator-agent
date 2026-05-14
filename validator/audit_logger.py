@@ -61,6 +61,11 @@ def log_validation(result: dict[str, Any]) -> dict[str, Any]:
         "risk_score": result.get("risk_score"),
         "reason": result.get("reason"),
         "suspicion_flags": result.get("suspicion_flags", []),
+        "severity": result.get("severity", "MEDIUM"),
+        "task_category": result.get("task_category", "default"),
+        "evidence_quality": result.get("evidence_quality", "unknown"),
+        "watchdog_alert": result.get("watchdog_alert", False),
+        "alert_level": result.get("alert_level", "CLEAR"),
         "llm_used": result.get("llm_used", False),
     }
 
