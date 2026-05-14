@@ -47,6 +47,7 @@ class TestSuspicionDetection:
             "manual_status": "Done",
             "screenshot_uploaded": True,
             "reviewer": "Amit",
+            "document_id": "DOC-001",
         }
         flags = detect_suspicions("Enable MFA", evidence)
         assert len(flags) == 0
