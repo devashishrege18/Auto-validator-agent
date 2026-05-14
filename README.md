@@ -1,6 +1,20 @@
 # 🏦 Auto-Auditor Validator Agent
 
-> An **Agentic AI micro-service** that independently verifies whether banking compliance tasks were actually completed — using hybrid deterministic rules + LLM reasoning, instead of trusting manual status updates.
+> An **Agentic AI micro-service** that independently verifies whether banking compliance tasks were actually completed — using a hybrid pipeline of deterministic rules, context-aware ML risk scoring, and local LLM reasoning, instead of trusting manual status updates.
+
+---
+
+## ⚡ Key Features
+
+| Feature | Description |
+|---|---|
+| **Context-Aware Validation** | Different task types (MFA, firewall, training) use different validation strategies with weighted evidence scoring |
+| **12 Suspicion Patterns** | Detects contradictions, manual bypasses, timestamp anomalies, duplicate evidence, and more |
+| **Watchdog Alert System** | Generates CRITICAL/WARNING/INFO alerts for Spectre-Sentinel integration |
+| **Explainable Reasoning Chain** | Step-by-step trace of every decision the engine made — fully auditable |
+| **Multi-Model LLM Fallback** | Tries phi3 → llama3 → mistral with response caching for speed |
+| **ML Risk Classification** | Custom-trained Random Forest predicts risk level (LOW/MEDIUM/HIGH/CRITICAL) and compliance score (0-100) |
+| **Comprehensive Test Suite** | 113 unit + integration tests with 100% pass rate |
 
 ---
 
@@ -16,17 +30,27 @@ AUTO_VALIDATOR_AGENT/
 │   ├── training_data.csv                  ← Generated ML training data
 │   ├── compliance_model.pkl               ← Trained ML model (auto-generated)
 │   └── audit_log.jsonl                    ← Audit trail (auto-generated)
-└── validator/
-    ├── __init__.py                        ← Python package marker
-    ├── schemas.py                         ← Pydantic models (request/response shapes)
-    ├── engine.py                          ← Core rule-based validation logic
-    ├── agent.py                           ← Compliance API checker + smart audit
-    ├── reasoning_engine.py                ← ⭐ Hybrid LLM + deterministic reasoning
-    ├── audit_logger.py                    ← Lightweight audit trail logging
-    ├── generate_training_data.py          ← Synthetic data generator (ML pipeline)
-    ├── train_model.py                     ← ML model training script
-    ├── ml_model.py                        ← ML inference module
-    └── llm_reasoner.py                    ← Ollama LLM integration (smart audit)
+├── validator/
+│   ├── __init__.py                        ← Python package marker
+│   ├── schemas.py                         ← Pydantic models (request/response shapes)
+│   ├── engine.py                          ← Core rule-based validation logic
+│   ├── agent.py                           ← Compliance API checker + smart audit
+│   ├── reasoning_engine.py                ← ⭐ Hybrid reasoning with reasoning chain
+│   ├── task_profiles.py                   ← Context-aware task classification
+│   ├── watchdog.py                        ← Spectre-Sentinel alert system
+│   ├── audit_logger.py                    ← Audit trail logging with severity
+│   ├── generate_training_data.py          ← Synthetic data generator (ML pipeline)
+│   ├── train_model.py                     ← ML model training script
+│   ├── ml_model.py                        ← ML inference module
+│   └── llm_reasoner.py                    ← Ollama LLM integration (smart audit)
+└── tests/
+    ├── test_schemas.py                    ← Pydantic model tests (13)
+    ├── test_engine.py                     ← Validation engine tests (13)
+    ├── test_reasoning.py                  ← Reasoning engine tests (22)
+    ├── test_ml_pipeline.py                ← ML pipeline tests (17)
+    ├── test_api.py                        ← FastAPI endpoint tests (26)
+    ├── test_task_profiles.py              ← Task classification tests (13)
+    └── test_watchdog.py                   ← Watchdog alert tests (9)
 ```
 
 ---
@@ -44,9 +68,9 @@ AUTO_VALIDATOR_AGENT/
 cd AUTO_VALIDATOR_AGENT
 
 # Create virtual environment
-python -m venv venv
-venv\Scripts\activate        # Windows
-# source venv/bin/activate   # Mac / Linux
+python -m venv .venv
+.venv\Scripts\activate        # Windows
+# source .venv/bin/activate   # Mac / Linux
 
 # Install packages
 pip install -r requirements.txt
@@ -68,7 +92,13 @@ python -m validator.train_model              # Train Random Forest (86.5% accura
 uvicorn main:app --reload
 ```
 
-### 5. Open Swagger Docs
+### 5. Run Tests
+
+```bash
+python -m pytest tests/ -v
+```
+
+### 6. Open Swagger Docs
 
 Visit **http://127.0.0.1:8000/docs** — all endpoints are interactive!
 
@@ -89,119 +119,108 @@ Visit **http://127.0.0.1:8000/docs** — all endpoints are interactive!
 | GET | `/password-policy` | Mock password policy API |
 | GET | `/audit` | Rule-based compliance audit |
 | GET | `/audit/smart` | ML + LLM powered audit |
-| **POST** | **`/reasoning-validate`** | **⭐ Intelligent LLM reasoning validator** |
+| **POST** | **`/reasoning-validate`** | **⭐ Intelligent reasoning validator** |
 | GET | `/audit-trail` | View validation audit log |
 | GET | `/audit-stats` | Audit trail statistics |
+| GET | `/watchdog/alerts` | 🔴 Watchdog alerts (Spectre-Sentinel) |
+| GET | `/watchdog/status` | 🟢🟡🔴 Compliance health status |
 
 ---
 
-## ⭐ Flagship: POST `/reasoning-validate`
-
-The core agentic endpoint — accepts any compliance task + evidence, runs hybrid reasoning, returns a standardised verdict.
-
-### Input
-
-```json
-{
-    "task_id": 1,
-    "task": "Enable MFA for admin accounts",
-    "evidence": {
-        "api_response": true,
-        "manual_status": "Done",
-        "screenshot_uploaded": true
-    }
-}
-```
-
-### Output
-
-```json
-{
-    "task_id": 1,
-    "status": "VERIFIED",
-    "confidence_score": 98,
-    "risk_score": 0,
-    "reason": "MFA confirmed through API verification and supporting evidence.",
-    "concerns": [],
-    "recommendation": "No further action required; continue routine monitoring.",
-    "suspicion_flags": [],
-    "llm_used": true,
-    "llm_model": "phi3",
-    "timestamp": "2026-05-13T12:23:05+00:00"
-}
-```
-
-### How it Works
+## 🧠 Intelligence Architecture
 
 ```
-Input (task + evidence)
-        │
-        ▼
-┌─────────────────────────────────┐
-│  1. SUSPICION DETECTOR          │  ← Deterministic rules
-│     • Missing evidence?         │     (instant, reliable)
-│     • Contradictions?           │
-│     • Manual-only claims?       │
-│     • API negative?             │
-└───────────┬─────────────────────┘
-            │ suspicion flags
-            ▼
-┌─────────────────────────────────┐
-│  2. RISK & CONFIDENCE SCORING   │  ← Weighted calculation
-│     • Risk: 0-100               │
-│     • Confidence: 0-100         │
-└───────────┬─────────────────────┘
-            │ scores + context
-            ▼
-┌─────────────────────────────────┐
-│  3. LLM REASONING (Ollama/phi3) │  ← Intelligent analysis
-│     • Evidence sufficiency?     │     (nuanced, contextual)
-│     • Is task truly compliant?  │
-│     • Anything suspicious?      │
-└───────────┬─────────────────────┘
-            │ structured verdict
-            ▼
-┌─────────────────────────────────┐
-│  4. AUDIT LOGGER                │  ← Compliance traceability
-│     • Appends to audit_log.jsonl│
-└───────────┬─────────────────────┘
-            │
-            ▼
-    Standardised Response
+┌─────────────────────────────────────────────────┐
+│              POST /reasoning-validate            │
+└──────────────────────┬──────────────────────────┘
+                       │
+          ┌────────────▼────────────┐
+          │  1. CLASSIFY TASK       │  ← task_profiles.py
+          │     (MFA/firewall/etc.) │
+          └────────────┬────────────┘
+                       │
+          ┌────────────▼────────────┐
+          │  2. SCORE EVIDENCE      │  ← Context-aware weights
+          │     (strong/moderate/   │
+          │      weak)              │
+          └────────────┬────────────┘
+                       │
+          ┌────────────▼────────────┐
+          │  3. DETECT SUSPICIONS   │  ← 12 patterns
+          │     (contradictions,    │
+          │      timestamps, etc.)  │
+          └────────────┬────────────┘
+                       │
+          ┌────────────▼────────────┐
+          │  4. CALCULATE SCORES    │
+          │     confidence: 0-100   │
+          │     risk:       0-100   │
+          └────────────┬────────────┘
+                       │
+          ┌────────────▼────────────┐
+          │  5. LLM REASONING       │  ← phi3 → llama3 → mistral
+          │     (or deterministic   │     + response caching
+          │      fallback)          │
+          └────────────┬────────────┘
+                       │
+          ┌────────────▼────────────┐
+          │  6. WATCHDOG ALERT      │  ← watchdog.py
+          │     CRITICAL/WARNING/   │     → Spectre-Sentinel
+          │     INFO/CLEAR          │
+          └────────────┬────────────┘
+                       │
+          ┌────────────▼────────────┐
+          │  7. RETURN RESULT       │
+          │     + reasoning_chain   │
+          │     + severity level    │
+          └─────────────────────────┘
 ```
 
-### Suspicion Detection Patterns
+---
 
-| Flag | Trigger | Risk Weight |
+## 🔍 Suspicion Detection Patterns
+
+| # | Pattern | What It Catches | Weight |
+|---|---|---|---|
+| 1 | `NO_EVIDENCE` | Empty evidence for a completed task | 30 |
+| 2 | `MANUAL_WITHOUT_API` | Manual "Done" without API verification | 20 |
+| 3 | `CONTRADICTORY_EVIDENCE` | API=False but manual="Done" | 25 |
+| 4 | `API_ONLY_NO_SUPPORT` | API=True but no docs/screenshot/reviewer | 10 |
+| 5 | `SCREENSHOT_ONLY` | Only screenshot, no API or reviewer | 15 |
+| 6 | `MOSTLY_EMPTY` | >50% evidence fields are null | 15 |
+| 7 | `API_NEGATIVE` | API explicitly returned False | 25 |
+| 8 | `TIMESTAMP_ANOMALY` | Future timestamps or unusual hours | 10-20 |
+| 9 | `API_UNAVAILABLE_BYPASS` | Completed during API outage window | 25 |
+| 10 | `CROSS_FIELD_MISMATCH` | Reviewer but no doc, or doc but no reviewer | 10 |
+| 11 | `SUSPICIOUSLY_FAST` | Task completed in under 5 minutes | 15 |
+| 12 | `DUPLICATE_EVIDENCE` | Same document reused across tasks | 15 |
+
+---
+
+## 🤝 Integration Points
+
+This agent is designed to work within a multi-agent banking compliance system:
+
+| System | Integration | Endpoint |
 |---|---|---|
-| `NO_EVIDENCE` | Empty evidence dict | 30 |
-| `CONTRADICTORY_EVIDENCE` | API says False, manual says "Done" | 25 |
-| `API_NEGATIVE` | API explicitly returned False | 25 |
-| `MANUAL_WITHOUT_API` | Manual claim with no API check | 20 |
-| `SCREENSHOT_ONLY` | Only screenshot, no corroboration | 15 |
-| `MOSTLY_EMPTY` | >50% of fields are null/empty | 15 |
-| `API_ONLY_NO_SUPPORT` | API True but no supporting docs | 10 |
+| **Dispatcher Agent** | Sends tasks for validation | `POST /reasoning-validate` |
+| **Spectre-Sentinel** | Polls for security alerts | `GET /watchdog/alerts`, `/watchdog/status` |
+| **Unified Dashboard** | Displays audit results | `GET /audit/smart`, `/audit-trail` |
 
 ---
 
-## 🏗️ Architecture
+## 🧪 Test Coverage
 
-Modular and integration-ready for:
+```
+113 tests across 7 test files:
 
-- **Dispatcher Agent** → sends tasks to `/reasoning-validate`
-- **Spectre-Sentinel Watchdog** → monitors `/audit-stats` and risk scores
-- **Frontend Dashboard** → displays verdicts from `/audit-trail`
+  test_schemas.py        — 13 tests (Pydantic models)
+  test_engine.py         — 13 tests (rule-based validation)
+  test_reasoning.py      — 22 tests (suspicion detection, scoring, verdicts)
+  test_ml_pipeline.py    — 17 tests (data generation, feature extraction)
+  test_api.py            — 26 tests (all API endpoints)
+  test_task_profiles.py  — 13 tests (task classification, evidence scoring)
+  test_watchdog.py       —  9 tests (alert evaluation, health status)
+```
 
----
-
-## 🛠️ Tech Stack
-
-| Component | Technology |
-|---|---|
-| API Framework | FastAPI |
-| Data Validation | Pydantic |
-| Server | Uvicorn |
-| Local LLM | Ollama (phi3) |
-| ML Model | scikit-learn (Random Forest) |
-| Data Processing | pandas |
-| Audit Trail | JSON-lines file |
+Run: `python -m pytest tests/ -v`
