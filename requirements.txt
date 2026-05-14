@@ -14,3 +14,5 @@ requests          # HTTP client for the validator agent to call compliance APIs
 scikit-learn      # ML framework for training the compliance model
 pandas            # Data manipulation for the training pipeline
 joblib            # Model serialisation (save/load .pkl files)
+pytest            # Unit testing framework
+httpx             # Async HTTP client (required by FastAPI TestClient)
