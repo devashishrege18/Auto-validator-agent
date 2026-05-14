@@ -21,3 +21,6 @@ Thumbs.db
 
 # Environment config
 .env
+
+# Test cache
+.pytest_cache/
