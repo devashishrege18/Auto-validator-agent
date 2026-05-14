@@ -23,16 +23,26 @@
 
 import json
 import re
+import hashlib
 import requests
 from datetime import datetime, timezone
 from typing import Any, Optional
+
+from validator.task_profiles import classify_task, get_profile, score_evidence
 
 # -------------------------------------------------------
 # Ollama Configuration
 # -------------------------------------------------------
 OLLAMA_URL = "http://localhost:11434"
-OLLAMA_MODEL = "phi3"
+OLLAMA_MODELS = ["phi3", "llama3", "mistral"]  # Fallback chain
+OLLAMA_MODEL = OLLAMA_MODELS[0]
 OLLAMA_TIMEOUT = 300  # seconds — phi3 on CPU can be slow
+
+# -------------------------------------------------------
+# LLM Response Cache (avoids re-calling for same inputs)
+# -------------------------------------------------------
+_llm_cache: dict[str, str] = {}
+MAX_CACHE_SIZE = 100
 
 
 # -------------------------------------------------------
@@ -170,6 +180,104 @@ def detect_suspicions(task: str, evidence: dict) -> list[dict]:
             "weight": 25,
         })
 
+    # ----- 7. Timestamp anomaly -----
+    # Evidence submitted outside business hours or in the future
+    submitted_at = evidence.get("submitted_at", "")
+    if submitted_at:
+        try:
+            ts = datetime.fromisoformat(str(submitted_at).replace("Z", "+00:00"))
+            now = datetime.now(timezone.utc)
+            if ts > now:
+                suspicions.append({
+                    "flag": "TIMESTAMP_ANOMALY",
+                    "detail": (
+                        f"Evidence timestamp ({submitted_at}) is in the future. "
+                        "Possible clock manipulation or fabricated evidence."
+                    ),
+                    "weight": 20,
+                })
+            elif ts.hour < 4 or ts.hour > 23:
+                suspicions.append({
+                    "flag": "TIMESTAMP_ANOMALY",
+                    "detail": (
+                        f"Evidence submitted at unusual hour ({ts.hour}:00). "
+                        "Activity outside business hours may indicate automation."
+                    ),
+                    "weight": 10,
+                })
+        except (ValueError, TypeError):
+            pass  # Can't parse timestamp — not suspicious on its own
+
+    # ----- 8. API unavailable during claimed completion -----
+    # Manual says "Done" but API returned None (unreachable)
+    api_unavailable = evidence.get("api_unavailable", False)
+    if (manual_status in ("done", "completed", "yes", "true")
+            and (api_unavailable is True or evidence.get("api_error"))):
+        suspicions.append({
+            "flag": "API_UNAVAILABLE_BYPASS",
+            "detail": (
+                "Task was marked complete while API verification was "
+                "unavailable. Possible attempt to bypass automated checks "
+                "during a system outage window."
+            ),
+            "weight": 25,
+        })
+
+    # ----- 9. Cross-field inconsistency -----
+    # Reviewer present but no document, or document but no reviewer
+    has_reviewer = bool(evidence.get("reviewer"))
+    has_document = bool(evidence.get("document_id"))
+    if has_reviewer and not has_document:
+        suspicions.append({
+            "flag": "CROSS_FIELD_MISMATCH",
+            "detail": (
+                "A reviewer is listed but no document_id was provided. "
+                "What exactly did the reviewer review?"
+            ),
+            "weight": 10,
+        })
+    elif has_document and not has_reviewer:
+        suspicions.append({
+            "flag": "CROSS_FIELD_MISMATCH",
+            "detail": (
+                "A document_id is present but no reviewer signed off. "
+                "Documents should have reviewer attestation."
+            ),
+            "weight": 10,
+        })
+
+    # ----- 10. Suspiciously fast completion -----
+    completed_at = evidence.get("completed_at", "")
+    created_at = evidence.get("created_at", "")
+    if completed_at and created_at:
+        try:
+            t_start = datetime.fromisoformat(str(created_at).replace("Z", "+00:00"))
+            t_end = datetime.fromisoformat(str(completed_at).replace("Z", "+00:00"))
+            delta_minutes = (t_end - t_start).total_seconds() / 60
+            if 0 < delta_minutes < 5:
+                suspicions.append({
+                    "flag": "SUSPICIOUSLY_FAST",
+                    "detail": (
+                        f"Task completed in {delta_minutes:.0f} minutes. "
+                        "Complex compliance tasks typically take much longer."
+                    ),
+                    "weight": 15,
+                })
+        except (ValueError, TypeError):
+            pass
+
+    # ----- 11. Duplicate evidence (same doc reused) -----
+    doc_id = evidence.get("document_id", "")
+    if doc_id and str(doc_id).startswith("REUSED-"):
+        suspicions.append({
+            "flag": "DUPLICATE_EVIDENCE",
+            "detail": (
+                f"Document '{doc_id}' appears to be reused from another task. "
+                "Each compliance task should have unique evidence."
+            ),
+            "weight": 15,
+        })
+
     return suspicions
 
 
@@ -238,14 +346,15 @@ def build_reasoning_prompt(
     suspicions: list[dict],
 ) -> str:
     """
-    Build a structured prompt that gives the LLM all the
-    context it needs to reason about the compliance task.
+    Build a structured prompt with banking-specific system
+    context and few-shot examples for consistent output.
     """
+    # Classify the task for context-aware prompting
+    category = classify_task(task)
+    profile = get_profile(category)
 
-    # Format evidence as readable text
     evidence_text = json.dumps(evidence, indent=2, default=str)
 
-    # Format suspicions as a list
     if suspicions:
         suspicion_text = "\n".join(
             f"  - [{s['flag']}] {s['detail']}" for s in suspicions
@@ -253,28 +362,39 @@ def build_reasoning_prompt(
     else:
         suspicion_text = "  None detected — evidence appears clean."
 
-    prompt = f"""You are an expert banking compliance auditor. Analyze the following task and evidence to determine if the compliance requirement is genuinely satisfied.
+    prompt = f"""You are a senior banking compliance auditor specialising in PCI-DSS, NIST SP 800-63B, RBI Cybersecurity Framework, and ISO 27001.
+
+TASK CATEGORY: {category.upper()} — {profile['description']}
 
 TASK: {task}
 
 EVIDENCE PROVIDED:
 {evidence_text}
 
-SUSPICION FLAGS DETECTED BY AUTOMATED RULES:
+AUTOMATED SUSPICION FLAGS:
 {suspicion_text}
 
-ANALYZE THE FOLLOWING:
-1. Is the evidence sufficient to verify this task?
-2. Are there any contradictions in the evidence?
-3. Is the task truly compliant based on the evidence?
-4. Does anything look suspicious or fabricated?
+=== FEW-SHOT EXAMPLES ===
 
-RESPOND IN EXACTLY THIS JSON FORMAT (no extra text):
+Example 1 (VERIFIED):
+Task: "Enable MFA for admin accounts"
+Evidence: {{"api_response": true, "manual_status": "Done", "reviewer": "Amit"}}
+Flags: None
+Response: {{"status": "VERIFIED", "reason": "API confirms MFA is active and reviewer has attested.", "concerns": [], "recommendation": "No action needed."}}
+
+Example 2 (NON_COMPLIANT):
+Task: "Activate perimeter firewall"
+Evidence: {{"api_response": false, "manual_status": "Done"}}
+Flags: [CONTRADICTORY_EVIDENCE]
+Response: {{"status": "NON_COMPLIANT", "reason": "API shows firewall inactive despite manual claim of completion — evidence contradicts.", "concerns": ["Manual bypass suspected", "PCI-DSS 1.1 violation"], "recommendation": "Escalate immediately. Verify firewall config."}}
+
+=== YOUR ANALYSIS ===
+Respond ONLY with valid JSON in this exact format:
 {{
   "status": "VERIFIED or NON_COMPLIANT or NEEDS_REVIEW",
   "reason": "One clear sentence explaining your verdict",
   "concerns": ["list", "of", "specific", "concerns"],
-  "recommendation": "One sentence recommendation for the audit team"
+  "recommendation": "One sentence for the audit team"
 }}"""
 
     return prompt
@@ -286,42 +406,63 @@ RESPOND IN EXACTLY THIS JSON FORMAT (no extra text):
 
 def call_ollama(prompt: str) -> Optional[str]:
     """
-    Send the reasoning prompt to Ollama and return
-    the raw response text.
+    Send the reasoning prompt to Ollama with:
+      - Response caching (same prompt = cached result)
+      - Multi-model fallback (phi3 → llama3 → mistral)
 
-    Returns None if Ollama is unavailable or errors out.
+    Returns None if all models fail or Ollama is unavailable.
     """
-    try:
-        response = requests.post(
-            f"{OLLAMA_URL}/api/generate",
-            json={
-                "model": OLLAMA_MODEL,
-                "prompt": prompt,
-                "stream": False,
-                "options": {
-                    "temperature": 0.2,    # Low = more deterministic
-                    "top_p": 0.9,
-                    "num_predict": 512,    # Keep response concise
+    global OLLAMA_MODEL, _llm_cache
+
+    # Check cache first
+    cache_key = hashlib.md5(prompt.encode()).hexdigest()
+    if cache_key in _llm_cache:
+        print("[REASONING] Cache hit — returning cached LLM response")
+        return _llm_cache[cache_key]
+
+    # Try each model in the fallback chain
+    for model in OLLAMA_MODELS:
+        try:
+            response = requests.post(
+                f"{OLLAMA_URL}/api/generate",
+                json={
+                    "model": model,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {
+                        "temperature": 0.2,
+                        "top_p": 0.9,
+                        "num_predict": 512,
+                    },
                 },
-            },
-            timeout=OLLAMA_TIMEOUT,
-        )
+                timeout=OLLAMA_TIMEOUT,
+            )
 
-        if response.status_code == 200:
-            return response.json().get("response", "")
-        else:
-            print(f"[REASONING] Ollama error {response.status_code}")
-            return None
+            if response.status_code == 200:
+                result = response.json().get("response", "")
+                OLLAMA_MODEL = model  # Track which model succeeded
+                # Store in cache
+                if len(_llm_cache) >= MAX_CACHE_SIZE:
+                    _llm_cache.clear()
+                _llm_cache[cache_key] = result
+                print(f"[REASONING] Got response from {model}")
+                return result
+            else:
+                print(f"[REASONING] {model} error {response.status_code}, trying next...")
+                continue
 
-    except requests.ConnectionError:
-        print("[REASONING] Ollama not running at", OLLAMA_URL)
-        return None
-    except requests.Timeout:
-        print(f"[REASONING] Ollama timed out ({OLLAMA_TIMEOUT}s)")
-        return None
-    except Exception as e:
-        print(f"[REASONING] Unexpected error: {e}")
-        return None
+        except requests.ConnectionError:
+            print("[REASONING] Ollama not running at", OLLAMA_URL)
+            return None  # No point trying other models if Ollama is down
+        except requests.Timeout:
+            print(f"[REASONING] {model} timed out, trying next...")
+            continue
+        except Exception as e:
+            print(f"[REASONING] {model} error: {e}, trying next...")
+            continue
+
+    print("[REASONING] All models failed")
+    return None
 
 
 # -------------------------------------------------------
@@ -448,44 +589,89 @@ def reason_and_validate(
     """
     The main entry point for the Reasoning Validator Engine.
 
-    Orchestrates the full validation pipeline:
-    1. Detect suspicions (deterministic)
-    2. Calculate risk and confidence scores
-    3. Call LLM for intelligent reasoning (or fallback)
-    4. Return standardised result
-
-    Parameters
-    ----------
-    task_id : int
-        Unique identifier for this task.
-    task : str
-        Description of the compliance task.
-    evidence : dict
-        Key-value evidence to validate against.
-
-    Returns
-    -------
-    dict
-        Standardised result with:
-        - task_id, status, confidence_score, risk_score, reason
-        - Plus: suspicion_flags, llm_used, timestamp
+    Orchestrates the full validation pipeline with an
+    explainable reasoning chain:
+    1. Classify the task category (context-aware)
+    2. Score evidence using category-specific weights
+    3. Detect suspicions (deterministic)
+    4. Calculate risk and confidence scores
+    5. Call LLM for intelligent reasoning (or fallback)
+    6. Evaluate watchdog alerts
+    7. Return standardised result with full reasoning chain
     """
+    from validator.watchdog import evaluate_alert
 
     timestamp = datetime.now(timezone.utc).isoformat()
+    reasoning_chain = []
 
     # --------------------------------------------------
-    # Step 1: Deterministic suspicion detection
+    # Step 1: Classify the task category
+    # --------------------------------------------------
+    category = classify_task(task)
+    profile = get_profile(category)
+    reasoning_chain.append({
+        "step": 1,
+        "action": "classify_task",
+        "result": category,
+        "note": f"Task matched '{category}' profile — {profile['description'][:80]}",
+    })
+
+    # --------------------------------------------------
+    # Step 2: Context-aware evidence scoring
+    # --------------------------------------------------
+    evidence_score = score_evidence(evidence or {}, category)
+    reasoning_chain.append({
+        "step": 2,
+        "action": "score_evidence",
+        "result": {
+            "weighted_score": evidence_score["weighted_score"],
+            "quality": evidence_score["evidence_quality"],
+            "missing_critical": evidence_score["missing_critical"],
+        },
+        "note": (
+            f"Evidence quality: {evidence_score['evidence_quality']} "
+            f"({evidence_score['weighted_score']:.0%})"
+        ),
+    })
+
+    # --------------------------------------------------
+    # Step 3: Deterministic suspicion detection
     # --------------------------------------------------
     suspicions = detect_suspicions(task, evidence)
+    reasoning_chain.append({
+        "step": 3,
+        "action": "detect_suspicions",
+        "result": f"{len(suspicions)} flag(s)",
+        "note": (
+            f"Flags: {', '.join(s['flag'] for s in suspicions)}"
+            if suspicions else "No suspicious patterns detected"
+        ),
+    })
 
     # --------------------------------------------------
-    # Step 2: Calculate scores
+    # Step 4: Calculate scores
     # --------------------------------------------------
     risk_score = calculate_risk_score(suspicions)
     confidence_score = calculate_confidence(evidence, suspicions)
 
+    # Context-aware adjustment: if evidence quality is weak
+    # for a high-threshold category, lower confidence
+    if (evidence_score["weighted_score"] < 0.4
+            and confidence_score > profile["min_confidence"]):
+        confidence_score = max(30, confidence_score - 15)
+
+    reasoning_chain.append({
+        "step": 4,
+        "action": "calculate_scores",
+        "result": {"confidence": confidence_score, "risk": risk_score},
+        "note": (
+            f"Confidence: {confidence_score}%, Risk: {risk_score}/100 "
+            f"(threshold: {profile['min_confidence']}%)"
+        ),
+    })
+
     # --------------------------------------------------
-    # Step 3: LLM reasoning (with deterministic fallback)
+    # Step 5: LLM reasoning (with deterministic fallback)
     # --------------------------------------------------
     llm_used = False
     prompt = build_reasoning_prompt(task, evidence, suspicions)
@@ -503,19 +689,22 @@ def reason_and_validate(
                 "Review LLM reasoning output."
             )
 
-            # Validate the status is one of our expected values
             if status not in (VERIFIED, NON_COMPLIANT, NEEDS_REVIEW):
                 status = NEEDS_REVIEW
 
-            # Adjust confidence based on LLM agreement with rules
+            # Confidence calibration: LLM vs rules agreement
             if suspicions and status == VERIFIED:
-                # LLM says verified but rules found issues — lower confidence
                 confidence_score = max(30, confidence_score - 20)
             elif not suspicions and status == VERIFIED:
-                # Both agree it's clean — boost confidence
                 confidence_score = min(98, confidence_score + 10)
+
+            reasoning_chain.append({
+                "step": 5,
+                "action": "llm_reasoning",
+                "result": status,
+                "note": f"LLM ({OLLAMA_MODEL}) verdict: {status} — {reason[:80]}",
+            })
         else:
-            # LLM responded but we couldn't parse it — use fallback
             fallback = deterministic_verdict(
                 task, evidence, suspicions, risk_score
             )
@@ -523,8 +712,13 @@ def reason_and_validate(
             reason = fallback["reason"] + " (LLM response unparseable)"
             concerns = fallback["concerns"]
             recommendation = fallback["recommendation"]
+            reasoning_chain.append({
+                "step": 5,
+                "action": "deterministic_fallback",
+                "result": status,
+                "note": "LLM responded but output was unparseable — used rules",
+            })
     else:
-        # No LLM available — pure deterministic
         fallback = deterministic_verdict(
             task, evidence, suspicions, risk_score
         )
@@ -532,11 +726,36 @@ def reason_and_validate(
         reason = fallback["reason"]
         concerns = fallback["concerns"]
         recommendation = fallback["recommendation"]
+        reasoning_chain.append({
+            "step": 5,
+            "action": "deterministic_fallback",
+            "result": status,
+            "note": "LLM unavailable — used deterministic rules only",
+        })
 
     # --------------------------------------------------
-    # Step 4: Build the standardised result
+    # Step 6: Determine severity level
     # --------------------------------------------------
-    return {
+    if risk_score >= 70 or status == NON_COMPLIANT:
+        severity = "CRITICAL"
+    elif risk_score >= 40 or len(suspicions) >= 2:
+        severity = "HIGH"
+    elif risk_score >= 20 or suspicions:
+        severity = "MEDIUM"
+    else:
+        severity = "LOW"
+
+    reasoning_chain.append({
+        "step": 6,
+        "action": "determine_severity",
+        "result": severity,
+        "note": f"Severity: {severity} (risk={risk_score}, flags={len(suspicions)})",
+    })
+
+    # --------------------------------------------------
+    # Step 7: Build the standardised result
+    # --------------------------------------------------
+    result = {
         "task_id": task_id,
         "status": status,
         "confidence_score": confidence_score,
@@ -545,7 +764,20 @@ def reason_and_validate(
         "concerns": concerns,
         "recommendation": recommendation,
         "suspicion_flags": [s["flag"] for s in suspicions],
+        "severity": severity,
+        "task_category": category,
+        "evidence_quality": evidence_score["evidence_quality"],
+        "reasoning_chain": reasoning_chain,
         "llm_used": llm_used,
         "llm_model": OLLAMA_MODEL if llm_used else None,
         "timestamp": timestamp,
     }
+
+    # --------------------------------------------------
+    # Step 8: Evaluate watchdog alert
+    # --------------------------------------------------
+    watchdog = evaluate_alert(result)
+    result["watchdog_alert"] = watchdog["watchdog_alert"]
+    result["alert_level"] = watchdog["alert_level"]
+
+    return result
