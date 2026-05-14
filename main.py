@@ -410,3 +410,50 @@ def view_audit_stats():
     Useful for the Spectre-Sentinel Watchdog and dashboards.
     """
     return get_audit_stats()
+
+
+# -------------------------------------------------------
+# 9.  Watchdog Endpoints (Spectre-Sentinel Integration)
+# -------------------------------------------------------
+# These endpoints are designed for the Spectre-Sentinel
+# Watchdog system to consume. It can poll these to detect
+# suspicious compliance activity in near-real-time.
+# -------------------------------------------------------
+
+from validator.watchdog import get_recent_alerts, get_alert_summary
+
+
+@app.get("/watchdog/alerts", tags=["Watchdog (Spectre-Sentinel)"])
+def watchdog_alerts(limit: int = 20):
+    """
+    Get recent watchdog alerts for Spectre-Sentinel.
+
+    Returns alerts generated when suspicious compliance
+    activity is detected. Alerts include:
+    - **CRITICAL** — immediate human intervention needed
+    - **WARNING** — investigate within 24 hours
+    - **INFO** — minor concern, monitor
+
+    Poll this endpoint to monitor compliance health.
+    """
+    alerts = get_recent_alerts(limit=limit)
+    return {
+        "alerts": alerts,
+        "total": len(alerts),
+    }
+
+
+@app.get("/watchdog/status", tags=["Watchdog (Spectre-Sentinel)"])
+def watchdog_status():
+    """
+    Get the overall compliance health status.
+
+    Returns a traffic-light status for quick monitoring:
+    - 🟢 **green** — no alerts, all clear
+    - 🟡 **yellow** — warnings detected, investigation needed
+    - 🔴 **red** — critical alerts, immediate action required
+
+    Spectre-Sentinel uses this for its health dashboard.
+    """
+    return get_alert_summary()
+
