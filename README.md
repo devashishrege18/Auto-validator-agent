@@ -1,6 +1,6 @@
 # 🏦 Auto-Auditor Validator Agent
 
-> An **Agentic AI micro-service** that independently verifies whether banking compliance tasks were actually completed — using a hybrid pipeline of deterministic rules, context-aware ML risk scoring, and local LLM reasoning, instead of trusting manual status updates.
+> An **Agentic AI micro-service** (v2.0) that independently verifies whether banking compliance tasks were actually completed — using a hybrid pipeline of deterministic rules, context-aware ML risk scoring, and local LLM reasoning, instead of trusting manual status updates.
 
 ---
 
@@ -12,9 +12,11 @@
 | **12 Suspicion Patterns** | Detects contradictions, manual bypasses, timestamp anomalies, duplicate evidence, and more |
 | **Watchdog Alert System** | Generates CRITICAL/WARNING/INFO alerts for Spectre-Sentinel integration |
 | **Explainable Reasoning Chain** | Step-by-step trace of every decision the engine made — fully auditable |
+| **Standardized API Envelope** | Every response wrapped in `{success, agent, version, data, meta}` for multi-agent interop |
 | **Multi-Model LLM Fallback** | Tries phi3 → llama3 → mistral with response caching for speed |
 | **ML Risk Classification** | Custom-trained Random Forest predicts risk level (LOW/MEDIUM/HIGH/CRITICAL) and compliance score (0-100) |
-| **Comprehensive Test Suite** | 113 unit + integration tests with 100% pass rate |
+| **Multi-Agent Demo Script** | 7-scenario demo simulating Dispatcher → Validator → Watchdog flow |
+| **Comprehensive Test Suite** | 120 unit + integration tests with 100% pass rate |
 
 ---
 
@@ -23,6 +25,7 @@
 ```
 AUTO_VALIDATOR_AGENT/
 ├── main.py                                ← FastAPI app & all API routes
+├── demo.py                                ← 7-scenario hackathon demo script
 ├── requirements.txt                       ← Python dependencies
 ├── README.md                              ← You are here!
 ├── data/
@@ -38,6 +41,7 @@ AUTO_VALIDATOR_AGENT/
 │   ├── reasoning_engine.py                ← ⭐ Hybrid reasoning with reasoning chain
 │   ├── task_profiles.py                   ← Context-aware task classification
 │   ├── watchdog.py                        ← Spectre-Sentinel alert system
+│   ├── response.py                        ← Standardized API response envelope
 │   ├── audit_logger.py                    ← Audit trail logging with severity
 │   ├── generate_training_data.py          ← Synthetic data generator (ML pipeline)
 │   ├── train_model.py                     ← ML model training script
@@ -207,20 +211,49 @@ This agent is designed to work within a multi-agent banking compliance system:
 | **Spectre-Sentinel** | Polls for security alerts | `GET /watchdog/alerts`, `/watchdog/status` |
 | **Unified Dashboard** | Displays audit results | `GET /audit/smart`, `/audit-trail` |
 
+All responses use a **standardised envelope**:
+```json
+{
+  "success": true,
+  "agent": "auto-auditor-validator",
+  "version": "2.0.0",
+  "timestamp": "2026-05-16T...",
+  "data": { "...actual payload..." },
+  "meta": { "request_id": "a1b2c3d4", "processing_ms": 42.1 }
+}
+```
+
+---
+
+## 🎬 Demo
+
+Run the full multi-agent workflow simulation:
+
+```bash
+# Terminal 1: Start the server
+uvicorn main:app --reload
+
+# Terminal 2: Run the demo
+python demo.py
+```
+
+The demo runs 7 banking scenarios showing: clean passes, contradictions, ghost completions, API outage bypasses, timestamp anomalies, and cross-field mismatches.
+
 ---
 
 ## 🧪 Test Coverage
 
 ```
-113 tests across 7 test files:
+120 tests across 7 test files:
 
   test_schemas.py        — 13 tests (Pydantic models)
   test_engine.py         — 13 tests (rule-based validation)
   test_reasoning.py      — 22 tests (suspicion detection, scoring, verdicts)
   test_ml_pipeline.py    — 17 tests (data generation, feature extraction)
-  test_api.py            — 26 tests (all API endpoints)
+  test_api.py            — 33 tests (endpoints, envelope, watchdog routes)
   test_task_profiles.py  — 13 tests (task classification, evidence scoring)
   test_watchdog.py       —  9 tests (alert evaluation, health status)
 ```
 
 Run: `python -m pytest tests/ -v`
+
