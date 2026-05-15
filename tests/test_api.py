@@ -183,7 +183,7 @@ class TestAuditEndpoint:
 # -------------------------------------------------------
 
 class TestReasoningEndpoint:
-    """Tests for POST /reasoning-validate."""
+    """Tests for POST /reasoning-validate (with response envelope)."""
 
     def test_valid_request_returns_200(self):
         """A properly formed request should return 200."""
@@ -198,18 +198,56 @@ class TestReasoningEndpoint:
         response = client.post("/reasoning-validate", json=payload)
         assert response.status_code == 200
 
-    def test_response_has_verdict_fields(self):
-        """Response should contain status, confidence, risk, reason."""
+    def test_response_has_envelope(self):
+        """Response should have the standardised envelope."""
+        payload = {
+            "task_id": 1,
+            "task": "Enable MFA",
+            "evidence": {"api_response": True},
+        }
+        body = client.post("/reasoning-validate", json=payload).json()
+        assert body["success"] is True
+        assert "agent" in body
+        assert "data" in body
+        assert "meta" in body
+
+    def test_envelope_has_processing_time(self):
+        """Envelope meta should include processing_ms."""
+        payload = {
+            "task_id": 1,
+            "task": "Check firewall",
+            "evidence": {"api_response": True},
+        }
+        body = client.post("/reasoning-validate", json=payload).json()
+        assert "processing_ms" in body["meta"]
+
+    def test_data_has_verdict_fields(self):
+        """Data payload should contain status, confidence, risk, reason."""
         payload = {
             "task_id": 1,
             "task": "Test task",
             "evidence": {"api_response": True},
         }
-        data = client.post("/reasoning-validate", json=payload).json()
+        body = client.post("/reasoning-validate", json=payload).json()
+        data = body["data"]
         assert "status" in data
         assert "confidence_score" in data
         assert "risk_score" in data
         assert "reason" in data
+
+    def test_data_has_new_fields(self):
+        """Data should include severity, task_category, reasoning_chain."""
+        payload = {
+            "task_id": 1,
+            "task": "Enable MFA",
+            "evidence": {"api_response": True},
+        }
+        body = client.post("/reasoning-validate", json=payload).json()
+        data = body["data"]
+        assert "severity" in data
+        assert "task_category" in data
+        assert "reasoning_chain" in data
+        assert isinstance(data["reasoning_chain"], list)
 
     def test_status_is_valid_enum(self):
         """Status should be one of VERIFIED/NON_COMPLIANT/NEEDS_REVIEW."""
@@ -218,8 +256,8 @@ class TestReasoningEndpoint:
             "task": "Check firewall",
             "evidence": {"api_response": False, "manual_status": "Done"},
         }
-        data = client.post("/reasoning-validate", json=payload).json()
-        assert data["status"] in ("VERIFIED", "NON_COMPLIANT", "NEEDS_REVIEW")
+        body = client.post("/reasoning-validate", json=payload).json()
+        assert body["data"]["status"] in ("VERIFIED", "NON_COMPLIANT", "NEEDS_REVIEW")
 
     def test_empty_evidence_returns_result(self):
         """Even empty evidence should return a result, not crash."""
@@ -236,3 +274,30 @@ class TestReasoningEndpoint:
         payload = {"evidence": {}}
         response = client.post("/reasoning-validate", json=payload)
         assert response.status_code == 422
+
+
+# -------------------------------------------------------
+# Watchdog Endpoints
+# -------------------------------------------------------
+
+class TestWatchdogEndpoints:
+    """Tests for /watchdog/alerts and /watchdog/status."""
+
+    def test_watchdog_alerts_returns_200(self):
+        response = client.get("/watchdog/alerts")
+        assert response.status_code == 200
+
+    def test_watchdog_alerts_has_envelope(self):
+        body = client.get("/watchdog/alerts").json()
+        assert body["success"] is True
+        assert "data" in body
+
+    def test_watchdog_status_returns_200(self):
+        response = client.get("/watchdog/status")
+        assert response.status_code == 200
+
+    def test_watchdog_status_has_traffic_light(self):
+        body = client.get("/watchdog/status").json()
+        data = body["data"]
+        assert data["status"] in ("green", "yellow", "red")
+
