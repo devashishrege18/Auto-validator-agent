@@ -14,12 +14,14 @@
 # -------------------------------------------------------
 
 import json
+import time
 import pathlib
 from fastapi import FastAPI, HTTPException
 
 # Our own modules (from the `validator/` package)
 from validator.schemas import ComplianceTask, ValidationResult
 from validator.engine import validate_task
+from validator.response import success_response, error_response
 
 # -------------------------------------------------------
 # 1.  Create the FastAPI app
@@ -314,7 +316,6 @@ from validator.schemas import ReasoningRequest, ReasoningResponse
 
 @app.post(
     "/reasoning-validate",
-    response_model=ReasoningResponse,
     tags=["Reasoning Validator (AI-Powered)"],
 )
 def reasoning_validate(request: ReasoningRequest):
@@ -324,44 +325,43 @@ def reasoning_validate(request: ReasoningRequest):
     Accepts a compliance task and its evidence, then runs a
     **hybrid reasoning pipeline**:
 
-    1. **Deterministic suspicion detection** — catches contradictions,
-       missing data, and fabrication patterns instantly
-    2. **LLM reasoning** (Ollama/phi3) — analyses the evidence like
-       a human auditor and provides nuanced judgment
-    3. **Risk & confidence scoring** — quantifies how suspicious
-       the evidence is and how confident the verdict is
+    1. **Context-aware task classification** — categorises the task
+    2. **Deterministic suspicion detection** — catches contradictions
+    3. **LLM reasoning** (Ollama phi3/llama3/mistral) — nuanced judgment
+    4. **Risk & confidence scoring** — quantifies suspicion level
+    5. **Watchdog alert evaluation** — triggers alerts if needed
 
-    **Input example:**
-    ```json
-    {
-        "task_id": 1,
-        "task": "Enable MFA for admin accounts",
-        "evidence": {
-            "api_response": true,
-            "manual_status": "Done",
-            "screenshot_uploaded": true
-        }
-    }
-    ```
-
-    **Output:**
-    - `status`: VERIFIED / NON_COMPLIANT / NEEDS_REVIEW
-    - `confidence_score`: 0-100
-    - `risk_score`: 0-100
-    - `reason`: human-readable explanation
-    - `suspicion_flags`: what the rules caught
-    - `llm_used`: whether the LLM was involved
-
-    **Falls back gracefully** to deterministic-only reasoning
-    if Ollama is not running.
+    Returns a **standardised envelope** for multi-agent consumption.
     """
+    t_start = time.time()
 
-    # Run the reasoning engine
-    result = reason_and_validate(
-        task_id=request.task_id,
-        task=request.task,
-        evidence=request.evidence,
-    )
+    # --- Input validation ---
+    if not request.task or not request.task.strip():
+        return error_response(
+            code="INVALID_TASK",
+            message="Task description cannot be empty.",
+            details={"field": "task"},
+        )
+
+    if not isinstance(request.evidence, dict):
+        return error_response(
+            code="INVALID_EVIDENCE",
+            message="Evidence must be a JSON object (dict).",
+            details={"received_type": type(request.evidence).__name__},
+        )
+
+    # --- Run the reasoning engine ---
+    try:
+        result = reason_and_validate(
+            task_id=request.task_id,
+            task=request.task,
+            evidence=request.evidence,
+        )
+    except Exception as exc:
+        return error_response(
+            code="ENGINE_ERROR",
+            message=f"Reasoning engine failed: {str(exc)}",
+        )
 
     # Add the task description to the result for audit logging
     result["task"] = request.task
@@ -369,7 +369,7 @@ def reasoning_validate(request: ReasoningRequest):
     # Log to the audit trail
     log_validation(result)
 
-    return result
+    return success_response(result, processing_start=t_start)
 
 
 # -------------------------------------------------------
@@ -386,14 +386,13 @@ def view_audit_trail(limit: int = 50):
 
     Returns entries newest-first, with a configurable limit.
     Each entry records: task, timestamp, verdict, risk score,
-    and which reasoning method was used.
-
-    Use this for compliance reporting and pattern analysis.
+    severity, watchdog alert status, and reasoning method.
     """
-    return {
-        "entries": get_audit_trail(limit=limit),
-        "total_returned": min(limit, len(get_audit_trail(limit=limit))),
-    }
+    entries = get_audit_trail(limit=limit)
+    return success_response({
+        "entries": entries,
+        "total_returned": len(entries),
+    })
 
 
 @app.get("/audit-stats", tags=["Audit Trail"])
@@ -401,15 +400,10 @@ def view_audit_stats():
     """
     Get summary statistics from the audit trail.
 
-    Returns:
-    - Total validations performed
-    - Breakdown by verdict (VERIFIED / NON_COMPLIANT / NEEDS_REVIEW)
-    - Average risk score
-    - Number of high-risk validations
-
-    Useful for the Spectre-Sentinel Watchdog and dashboards.
+    Returns total validations, breakdown by verdict,
+    average risk score, and high-risk count.
     """
-    return get_audit_stats()
+    return success_response(get_audit_stats())
 
 
 # -------------------------------------------------------
@@ -437,10 +431,10 @@ def watchdog_alerts(limit: int = 20):
     Poll this endpoint to monitor compliance health.
     """
     alerts = get_recent_alerts(limit=limit)
-    return {
+    return success_response({
         "alerts": alerts,
         "total": len(alerts),
-    }
+    })
 
 
 @app.get("/watchdog/status", tags=["Watchdog (Spectre-Sentinel)"])
@@ -455,5 +449,5 @@ def watchdog_status():
 
     Spectre-Sentinel uses this for its health dashboard.
     """
-    return get_alert_summary()
+    return success_response(get_alert_summary())
 
