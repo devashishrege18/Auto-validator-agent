@@ -19,6 +19,10 @@ Thumbs.db
 # ML model files (large binaries)
 *.pkl
 
+# Generated data files
+data/training_data.csv
+data/audit_log.jsonl
+
 # Environment config
 .env
 
